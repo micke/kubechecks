@@ -133,8 +133,14 @@ func (c *Client) DownloadArchive(ctx context.Context, pr vcs.PullRequest) (strin
 		baseURL = strings.TrimSuffix(baseURL, "/")
 		archiveURL = fmt.Sprintf("%s/%s/%s/archive/%s.zip", baseURL, pr.Owner, pr.Name, mergeCommitSHA)
 	} else {
-		// GitHub.com
-		archiveURL = fmt.Sprintf("https://github.com/%s/%s/archive/%s.zip", pr.Owner, pr.Name, mergeCommitSHA)
+		// GitHub.com: use the API zipball endpoint rather than the web
+		// archive URL. The web URL (github.com/<o>/<r>/archive/<sha>.zip)
+		// 302-redirects to codeload.github.com, and Go's http.Client strips
+		// the Authorization header on cross-host redirects — so private-repo
+		// downloads fail with 404. The API endpoint receives the auth header
+		// directly, and its redirect embeds a short-lived token in the
+		// Location URL, so the stripped header doesn't matter.
+		archiveURL = fmt.Sprintf("https://api.github.com/repos/%s/%s/zipball/%s", pr.Owner, pr.Name, mergeCommitSHA)
 	}
 
 	log.Debug().

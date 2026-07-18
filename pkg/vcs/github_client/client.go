@@ -26,6 +26,11 @@ type Client struct {
 	googleClient   *GClient
 	cfg            config.ServerConfig
 
+	// appTransport is set when authenticating as a GitHub App; it mints
+	// short-lived installation tokens for requests made outside the
+	// API client (e.g. archive downloads).
+	appTransport *ghinstallation.Transport
+
 	// archiveRetry overrides retry parameters for DownloadArchive. Zero value uses defaults.
 	archiveRetry retryConfig
 
@@ -50,7 +55,7 @@ func CreateGithubClient(ctx context.Context, cfg config.ServerConfig) (*Client, 
 		shurcoolClient *githubv4.Client
 	)
 
-	githubClient, err := createHttpClient(ctx, cfg)
+	githubClient, appTransport, err := createHttpClient(ctx, cfg)
 	if err != nil {
 		return nil, errors.Wrap(err, "failed to create github http client")
 	}
@@ -78,6 +83,7 @@ func CreateGithubClient(ctx context.Context, cfg config.ServerConfig) (*Client, 
 			Issues:       IssuesService{googleClient.Issues},
 		},
 		shurcoolClient: shurcoolClient,
+		appTransport:   appTransport,
 		username:       cfg.VcsUsername,
 		email:          cfg.VcsEmail,
 	}
@@ -105,17 +111,17 @@ func CreateGithubClient(ctx context.Context, cfg config.ServerConfig) (*Client, 
 	return client, nil
 }
 
-func createHttpClient(ctx context.Context, cfg config.ServerConfig) (*http.Client, error) {
+func createHttpClient(ctx context.Context, cfg config.ServerConfig) (*http.Client, *ghinstallation.Transport, error) {
 	// Initialize the GitHub client with app key if provided
 	if cfg.IsGithubApp() {
 		appTransport, err := ghinstallation.New(
 			http.DefaultTransport, cfg.GithubAppID, cfg.GithubInstallationID, []byte(cfg.GithubPrivateKey),
 		)
 		if err != nil {
-			return nil, errors.Wrap(err, "failed to create github app transport")
+			return nil, nil, errors.Wrap(err, "failed to create github app transport")
 		}
 
-		return &http.Client{Transport: appTransport}, nil
+		return &http.Client{Transport: appTransport}, appTransport, nil
 	}
 
 	// Initialize the GitHub client with access token if app key is not provided
@@ -125,10 +131,10 @@ func createHttpClient(ctx context.Context, cfg config.ServerConfig) (*http.Clien
 		ts := oauth2.StaticTokenSource(
 			&oauth2.Token{AccessToken: vcsToken},
 		)
-		return oauth2.NewClient(ctx, ts), nil
+		return oauth2.NewClient(ctx, ts), nil, nil
 	}
 
-	return nil, errors.New("Either GitHub token or GitHub App credentials (App ID, Installation ID, Private Key) must be set")
+	return nil, nil, errors.New("Either GitHub token or GitHub App credentials (App ID, Installation ID, Private Key) must be set")
 }
 
 func (c *Client) Username() string { return c.username }
@@ -147,6 +153,19 @@ func (c *Client) CloneUsername() string {
 
 // GetAuthHeaders returns HTTP headers needed for authenticated archive downloads
 func (c *Client) GetAuthHeaders() map[string]string {
+	// GitHub App auth: the static VcsToken is empty; mint a short-lived
+	// installation token from the app transport instead.
+	if c.appTransport != nil {
+		token, err := c.appTransport.Token(context.Background())
+		if err != nil {
+			log.Error().Err(err).Msg("failed to get github app installation token for archive download")
+			return map[string]string{}
+		}
+		return map[string]string{
+			"Authorization": fmt.Sprintf("Bearer %s", token),
+		}
+	}
+
 	// GitHub accepts: Authorization: Bearer <token> or Authorization: token <token>
 	// Using Bearer format as it's the modern standard
 	return map[string]string{
