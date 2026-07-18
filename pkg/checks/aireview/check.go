@@ -210,8 +210,12 @@ func (c *Checker) Check(ctx context.Context, request checks.Request) (retResult 
 	// Build changed files content with line numbers for accurate suggestions
 	changedFilesContent := buildChangedFilesContent(request)
 
-	// Bundle diff, manifests, and Helm values inline so the LLM can start reviewing immediately
-	renderedManifestsText := strings.Join(request.YamlManifests, "\n---\n")
+	// Bundle diff, manifests, and Helm values inline so the LLM can start reviewing immediately.
+	// Large charts (e.g. cilium) can render megabytes — cap the inline sections so the
+	// initial prompt fits model context and provider request limits; the agent can still
+	// inspect details through its (equally capped) tools.
+	renderedManifestsText := truncateForPrompt(strings.Join(request.YamlManifests, "\n---\n"), "rendered manifests")
+	renderedDiff = truncateForPrompt(renderedDiff, "diff")
 	userPrompt := aireview.BuildUserPrompt(request.AppName, request.PRTitle, request.PRDescription, renderedDiff, renderedManifestsText, helmValues, changedFilesContent, toolNames)
 
 	// Run the agentic loop — blocking call
@@ -452,4 +456,18 @@ func formatSourceInfo(app v1alpha1.Application) string {
 		parts = append(parts, info)
 	}
 	return strings.Join(parts, "; ")
+}
+
+// maxInlinePromptBytes caps each large section embedded in the initial review prompt.
+// Large charts (cilium, kube-prometheus-stack) render megabytes of manifests/diff,
+// which otherwise exceeds model context windows and provider per-request token limits.
+const maxInlinePromptBytes = 100_000
+
+// truncateForPrompt caps s at maxInlinePromptBytes, appending a notice that points
+// the agent at its tools for the full content.
+func truncateForPrompt(s, what string) string {
+	if len(s) <= maxInlinePromptBytes {
+		return s
+	}
+	return s[:maxInlinePromptBytes] + fmt.Sprintf("\n\n[%s truncated at %d bytes — use the tools to inspect specific resources]", what, maxInlinePromptBytes)
 }
