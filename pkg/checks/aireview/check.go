@@ -401,8 +401,17 @@ func buildChangedFilesContent(request checks.Request) string {
 	}
 
 	var parts []string
+	var skippedChartFiles int
 	repoDir := request.Repo.Directory
 	for _, f := range request.ChangedFiles {
+		// Vendored Helm chart sources (e.g. Renovate's kustomize chart
+		// inflation) can be thousands of files per bump; the rendered
+		// manifests and diff already reflect their effect, so inlining
+		// them only blows the prompt budget.
+		if strings.Contains(f, "/charts/") || strings.HasPrefix(f, "charts/") {
+			skippedChartFiles++
+			continue
+		}
 		filePath := filepath.Join(repoDir, f)
 		// Protect against path traversal — ensure the resolved path stays within the repo
 		absPath, err := filepath.Abs(filePath)
@@ -424,11 +433,15 @@ func buildChangedFilesContent(request checks.Request) string {
 		parts = append(parts, fmt.Sprintf("### File: `%s`\n```\n%s\n```", f, addLineNumbers(string(data))))
 	}
 
+	if skippedChartFiles > 0 {
+		parts = append(parts, fmt.Sprintf("### Note\n%d changed files under charts/ directories (vendored Helm chart sources) were omitted — their effect is visible in the rendered manifests and diff.", skippedChartFiles))
+	}
+
 	if len(parts) == 0 {
 		return ""
 	}
 
-	return "## Changed Files (with line numbers)\nUse these line numbers when calling post_suggestion.\n\n" + strings.Join(parts, "\n\n")
+	return truncateForPrompt("## Changed Files (with line numbers)\nUse these line numbers when calling post_suggestion.\n\n"+strings.Join(parts, "\n\n"), "changed files")
 }
 
 // formatSourceInfo extracts source information from the ArgoCD Application.
