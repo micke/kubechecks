@@ -43,7 +43,9 @@ func (p *Provider) Chat(ctx context.Context, req aiproviders.ChatRequest) (*aipr
 	}
 
 	if req.MaxTokens > 0 {
-		params.MaxTokens = openai.Int(int64(req.MaxTokens))
+		// max_completion_tokens: reasoning-tier models (gpt-5.x, o-series)
+		// reject the legacy max_tokens parameter with a 400
+		params.MaxCompletionTokens = openai.Int(int64(req.MaxTokens))
 	}
 	if req.Temperature > 0 {
 		params.Temperature = openai.Float(req.Temperature)
