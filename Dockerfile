@@ -120,7 +120,11 @@ RUN /app/kubechecks help
 
 USER kubechecks
 
-CMD ["/app/kubechecks", "controller"]
+# Match the released image contract: the helm chart passes args
+# (e.g. ["controller"]) that append to an ENTRYPOINT, so the binary
+# must be the entrypoint rather than part of CMD.
+ENTRYPOINT ["/app/kubechecks"]
+CMD ["controller"]
 
 # ============================================================================
 # Stage: debug
